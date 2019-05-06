@@ -1,0 +1,306 @@
+---
+title: "ACCESS Project (With reviewer's responses addressed"
+author: "Bill Liu"
+date: "May 05, 2019"
+output: html_document
+---
+
+##Abstract
+<b>Introduction</b> There have been growing literature highlighting the healthcare inequity among the U.S. population. The type of health care people access can have an impact on their health outcomes. This study aims to investigate this association by examining the reporting source for breast cancer and patients' survival. The objective of this study is to determine whether the different types of cancer diagnosis reporting source (eight types of sources as coded by medical records) are associated with a difference in breast cancer survival in the U.S. 
+<br />
+<b>Methods</b> Breast cancer diagnosis and survival data are extracted from the Surveillance, Epidemiology and End Results program database (SEER). SEER data will be downloaded from SEER"*"Stat, cleaned and analyzed in RStudio (3.5.2). Multiple imputation method will be used to account for missing data (package: MICE). A Cox proportional hazards regression model will be built to analyze the hazard ratio, as well as plotted on a survival curve in order to further characterize the association. A second model will be built by adjusting the survival curves by the mean of diagnosis age in each group.
+<br />
+<b>Results</b> Checking for missing data revealed no missing data were reported for our key variables. An Easter egg was also revealed in the consol when there are no possible *mice*! A univariate coxph model was constructed to reveal statistical significance on "laboratory", "nursing home", "surgery center", "physicians office", when compared with our reference group of "hospital" reporting (all p<.05). After adjusting for age, the multivariate model revealed protective effects from "surgery center" (coxph=0.67, p<.05), and hazardos effects from "laboratory" (coxph=1.43, p<.05), "physicians office"(coxph=3.00, p<.05). The most significant hazard of death comes from those reporting from "nursing home" (coxph=24.74, p<.05), compared with those reporting from hospitals, those reporting from nursing homes are 24.74 times the hazard of death. A survival curve was plotted based on this model.
+<br />
+<b>Discussion</b> In terms of statistical modelling, a third, multivariate model was constructed to test if the association seen in the previous two are consistent. However, with other variables controlled, the relationship persists. If this finding persists, it suggest that an increased effort should be focused on determining the causal pathways displayed by these associations. The results of this study can be used to prioritize cancer prevention efforts as well as early check-up campaigns. Further analysis on other types of cancer should be extended to see if this trend persists in order to generalize our findings. 
+
+##Preparation
+A select subset of SEER cancer data was exported from SEER*Stat. Along with related variables, these are imported into R and cleaned via code below. Variables deemed unusable are deleted. Cancer stage is grouped into I-IV, attributable death is recoded into binary, insurance status cleaned, and reporting type grouped recoded into factor variable.
+
+Warning is supressed and output is excluded due to the amount of times whole tables are called in this preparation chunk.
+```{r Preparation, warning=FALSE, results="hide"}
+#Checking packages for missing data analysis
+library(mice)
+library(VIM)
+library(lattice)
+
+#Checking packages for Survival Analysis
+library(readr) #for read txt file
+library(survival) #for calculating KM values
+library(survminer)#for pairwise diffs
+library(ggfortify) #for KM curves
+library(readxl) # for reading in excel file
+library(ggplot2) # for plotting KM curve
+library(tidyverse) # for various packages
+
+#Checking packages for Coxph Analysis
+library(lmtest) #model comparison
+library(stargazer) #model presentation
+
+#Creating descriptives
+library(tableone) #for descriptives
+library(table1) #guess what there is another table1 package
+
+#Getting data
+ACCESS <- read.csv("SEER_BRCA_Access full data.csv")
+str(ACCESS)
+
+#Cleaning unneccessarily exported variables
+ACCESS$SEER.registry <- NULL
+ACCESS$County <- NULL
+ACCESS$State.county <- NULL
+str(ACCESS)
+
+#Renaming variables
+names(ACCESS)<-c("ID", "sex", "race", "birth_year", "diagnosis_age", "diagnosis_year", "poverty_perc", "education_perc", "site", "reporting", "survival", "stage", "insurance", "death_specific", "death_other")
+str(ACCESS)
+
+#Double checking the data exported from SEER*Stat are breast cancer patients
+summary(ACCESS$site)
+
+#Deleting this variable because it looked fine
+ACCESS$site <- NULL
+
+#Cleaning $stage
+summary(ACCESS$stage)
+ACCESS$stage_cleaned[
+ACCESS$stage=="IA"|
+ACCESS$stage=="IB"]<-0
+ACCESS$stage_cleaned[
+ACCESS$stage=="IIA"|
+ACCESS$stage=="IIB"]<-1
+ACCESS$stage_cleaned[
+ACCESS$stage=="IIIA"|
+ACCESS$stage=="IIIB"|
+ACCESS$stage=="IIIC"|
+ACCESS$stage=="IIINOS"]<-2
+ACCESS$stage_cleaned[
+ACCESS$stage=="IV"]<-3
+ACCESS$stage_cleaned[
+ACCESS$stage=="UNK Stage"]<-4
+ACCESS$stage_cleaned<-factor(ACCESS$stage_cleaned,
+levels = c(0,1,2,3,4),
+labels = c("Stage 1", "Stage 2", "Stage 3", "Stage 4", "Stage Unknown"))
+table(ACCESS$stage_cleaned)
+
+#Cleaning $death_specific
+summary(ACCESS$death_specific)
+ACCESS$died[
+ACCESS$death_specific=="Dead (attributable to this cancer dx)"]<-1
+ACCESS$died[
+ACCESS$death_specific=="Alive or dead of other cause"|
+ACCESS$death_specific=="N/A not first tumor"]<-0
+ACCESS$died<-factor(ACCESS$died, 
+levels = c(0, 1),
+labels = c("Not breast cancer specific", "Died of breast cancer"))
+table(ACCESS$died)
+
+#Cleaning $insurance, totally copied these code word for word from HW9
+ACCESS$insurance_cleaned[
+ACCESS$insurance=="Insured"]<-0
+ACCESS$insurance_cleaned[
+ACCESS$insurance=="Insured/No specifics"]<-1
+ACCESS$insurance_cleaned[
+ACCESS$insurance=="Any Medicaid"]<-2
+ACCESS$insurance_cleaned[
+ACCESS$insurance=="Uninsured"]<-3
+ACCESS$insurance_cleaned[
+ACCESS$insurance=="Insurance status unknown"]<-4
+ACCESS$insurance_cleaned<-factor(ACCESS$insurance_cleaned,
+levels = c(0,1,2,3,4),
+labels = c("Insured", "Insured/No specifics", "Any Medicaid", "Uninsured", "Unknown"))
+table(ACCESS$insurance_cleaned)
+
+#Cleaning $reporting
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Hospital inpatient/outpatient or clinic"]<-0
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Autopsy only"]<-1
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Death certificate only"]<-2
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Laboratory only (hospital or private)"]<-3
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Nursing/convalescent home/hospice"]<-4
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Other hospital outpatient unit or surgery center (2006+)"]<-5
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Physicians office/private medical practitioner (LMD)"]<-6
+ACCESS$reporting_cleaned[
+ACCESS$reporting=="Radiation treatment or medical oncology center (2006+)"]<-7
+ACCESS$reporting_cleaned<-factor(ACCESS$reporting_cleaned,
+levels = c(0,1,2,3,4,5,6,7),
+labels = c("Hospital", "Autopsy", "Death certificate", "Laboratory", "Nursing home", "Surgery center", "Physicians office", "Oncology center"))
+table(ACCESS$reporting_cleaned)
+
+#Cleaning $survival
+ACCESS$survival <- as.numeric(ACCESS$survival)
+summary(ACCESS$survival)
+
+#Cleaning $ID, because OCD
+ACCESS$ID <- as.character(ACCESS$ID)
+summary(ACCESS$ID)
+
+#Cleaning $poverty_perc
+ACCESS$poverty_perc <- as.numeric(ACCESS$poverty_perc)
+summary(ACCESS$poverty_perc)
+
+#Cleaning $education_perc
+ACCESS$education_perc <- as.numeric(ACCESS$education_perc)
+summary(ACCESS$education_perc)
+
+#Checking variables that doesn't really need to be cleaned
+summary(ACCESS$sex)
+summary(ACCESS$race)
+summary(ACCESS$birth_year)
+summary(ACCESS$diagnosis_age)
+summary(ACCESS$diagnosis_year)
+```
+
+##Missing data management
+A separate dataset with just the used variables are created for clarity. This is done after I noticed that our main variables have no missing data. Surpirse! You get a kitty cat for that.
+
+However cute, with the addition of control variables like insurance and stage of diagnosis, the missing data can amount to a significant number. The lack of missing data in our primary variables is possibly due to the fact that reporting source is how this dataset collected its data points, and survival is its primary end point. 
+
+Instead, in the next section, omission methods are used to treat the NAs. This has its limitations, as we are rounding down our sample size to a smaller population, potentially overlooking effects.
+
+Still, I was curious so I did a marginsplot to see what no missing data pattern looks like anyways.
+```{r Data management}
+#Creating dataset with specified variables to look at missing data 
+keeps<-c("survival", "reporting_cleaned", "sex", "race", "diagnosis_age") #keep only these variables
+ACCESS_small<-ACCESS[keeps] #drops variables that are not in the keeps list
+
+#Checking for missing data pattern
+md.pattern(ACCESS_small)
+
+#Oh look at that, an Easter egg. This is good news.
+
+#Marginsplot, just for fun
+marginplot(ACCESS_small[,c("reporting_cleaned","survival")], col=c("blue","red","orange"), cex=1,
+cex.lab=1.3, cex.numbers=0.7, pch=19) 
+```
+
+##CoxPHazard analysis
+The reporting type variable is recoded to delete two categories "autopsy" and "death certificate". The reason being that if breast cancer is reported at death, then all survival rates will be zero in those categoeis, therefore making our model invalid. In truth, checking for those categories returned a lot of zeros, as well as errors when running the ggsurvplot function. A new variable is created, and NAs are omitted. The data is checked again to ensure that previous encoding are properly coded, and no additional empty fields are generated through this process.
+
+Three Cox Proportional Hazard regresion model are created. First, a univariate coxph model tests survival of reporting types. Second, a multivariate coxph model tests survival of reporting types with age adjusted. This model is used to graph survival plot. THird, another multivariate coxph model tests our association with the addition of control variables.
+```{r CoxPH}
+#Cleaning $reporting
+ACCESS$reporting_omit[
+ACCESS$reporting=="Hospital inpatient/outpatient or clinic"]<-0
+ACCESS$reporting_omit[
+ACCESS$reporting=="Laboratory only (hospital or private)"]<-1
+ACCESS$reporting_omit[
+ACCESS$reporting=="Nursing/convalescent home/hospice"]<-2
+ACCESS$reporting_omit[
+ACCESS$reporting=="Other hospital outpatient unit or surgery center (2006+)"]<-3
+ACCESS$reporting_omit[
+ACCESS$reporting=="Physicians office/private medical practitioner (LMD)"]<-4
+ACCESS$reporting_omit[
+ACCESS$reporting=="Radiation treatment or medical oncology center (2006+)"]<-5
+ACCESS$reporting_omit<-factor(ACCESS$reporting_omit,
+levels = c(0,1,2,3,4,5),
+labels = c("Hospital", "Laboratory", "Nursing home", "Surgery center", "Physicians office", "Oncology center"))
+table(ACCESS$reporting_omit)
+table(ACCESS$reporting_cleaned)
+
+ACCESS_omit = na.omit(ACCESS)
+head(ACCESS_omit)
+
+#Building a univariate cox proportional hazard model
+survival_uni = coxph(Surv(survival, as.numeric(died)) ~ reporting_omit, data = ACCESS_omit, ties = "breslow") 
+summary(survival_uni)
+
+#Building a multivariate cox proportional hazard model
+survival_multi = coxph(Surv(survival, as.numeric(died)) ~ reporting_omit + diagnosis_age, data = ACCESS_omit, ties = "breslow")
+summary(survival_multi)
+
+#Building a second multivariate cox proportional hazard model
+survival_multi2 = coxph(Surv(survival, as.numeric(died)) ~ reporting_omit + diagnosis_age + sex + race + insurance_cleaned + stage_cleaned, data = ACCESS_omit, ties = "breslow")
+summary(survival_multi2)
+
+#Create the new data for plotting adjusted survival curves for each treatment group using diagnosis_age set at the mean
+reporting_mean = with(ACCESS_omit, data.frame(reporting_omit=c("Hospital", "Laboratory", "Nursing home", "Surgery center", "Physicians office", "Oncology center"), diagnosis_age=rep(mean(diagnosis_age, na.rm = T),6)))
+reporting_mean 
+
+ggsurvplot(survfit(survival_multi, newdata = reporting_mean), data = ACCESS_omit, conf.int = T,
+           legend.labs = c("Hospital", "Laboratory", "Nursing home", "Surgery center", "Physicians office", "Oncology center"), 
+           ggtheme=theme_classic())
+```
+
+##Running some descriptives
+Is it too late to tag it at the end? I did this because we modified variables in the last chunk and created new datasets.
+
+```{r Descriptives}
+#Handy dandy package for descriptives.
+table_one <- CreateTableOne(vars = c("sex", "race", "diagnosis_age", "insurance_cleaned", "stage_cleaned", "survival", "died"), strata = "reporting_omit", data = ACCESS_omit)
+table_one
+```
+
+##Response to reviewers
+
+Also, done some code cleanup to the command to recode the variable "died" by including proper levels and labels. This means that an additional command have to be set in coxph models (as.numeric) to coerce it into a numerical variable.
+
+RE: *For Table 1, I would suggest that you look at the characteristics in the left most column by whether they were alive or dead of breast cancer. So you will have 4 columns: 1) characteristics, 2) Overall, 3) Alive, and 4) Dead. I would also include the reporting source as a column 1 variable.*
+
+```{r Responses to reivewers}
+#New package actually. A new package is used (Table1) because I can't figure out how to display stratified and overall at the same time with the old package
+table_two <- table1(~ sex + race + insurance_cleaned + stage_cleaned + reporting_omit + diagnosis_age + survival | died, data = ACCESS_omit)
+table_two #Because it is not table one if there are two of them
+```
+
+RE: *Is there any prior literature on this topic? Typically, with respect to your main finding for nursing home residents with breast cancer?*
+
+As discussed during the presentation, the association between nursing home residents with breast cancer and their survival is not a straightforward issue. There are multiple considerations. For one, those who are ill tend to register for nursing homes in order to receive round-the-clock care. They tend to be older, and nursing home is a typical choice for end-of-life care. Co-morbidities and old-age problems mediate the relationship between having reporting breast cancer at a nursing home and patients' survival.
+
+In a study on the functional status and survival of nursing home residents after breast cancer, the authors found that poorer pre-operative function is significantly associated with post-surgery mortality, as well as with post-operative functional decline.[citation 1] If we treat pre-operative function decline as an indicator or proxy of old age at nursing homes, the association found in our study is not independent. This suggest that there are unaccounted factors related to old age and nursing home that was not taken into account in our survival model. Especially in terms of end-of-life and survival, being a resident of nursing home is influenced by many associated factors. This is reinforced by literature, with authors pointing out that such functional decline can include decreased arm function due to surgery. The authors also highlighted that, poor social support for patients' living at nursing homes are also found to be relevant in surgery survival and recovery, as well as the additional consideration of the high prevalence of cognitive impairment in the nursing home population.[citation 2] 
+
+In consideration of these factors associated with living at a nursing home, it seems that this report category is different in nature from the other reporting categories. Whereas nursing home captures a long range of a patient's life (and its associated outcomes), other categories capture a relatively short duration (i.e. one visit). This can bias the observation, artificially inflating the hazard ratios. This is something to consider with further research, suggesting determining the detailed pathway might be a good path in clarifying the relationship found in this study.
+
+1.	Tang V, Zhao S, Boscardin J, Sudore R, Covinsky K, Walter L C, Esserman L, Mukhtar R, Finlayson E. Functional Status and Survival After Breast Cancer Surgery in Nursing Home Residents. JAMA Surg; 2018;153(12):1090-1096. Doi:10.1001/jamasurg.2018.2736
+2.	Goodwin J S, Satish S, Anderson E T, Nattinger A B, Freeman J L. Effect of Nurse Case Management on the Treatment of Older Women with Breast Cancer. Journal of the American Geriatrics Society; 2003;51(9):1252-1259. Doi:10.1046/j.1532-5415.2003.51409.x
+
+RE: *Study population details? Who was excluded? Include diagnosis years in the information of who was included and which SEER database and age range was included.*
+
+SEER 18 incidence data from 1975-2016 are used (Apr 15, 2019). It covers approximately 27.8% of the U.S. population based on estimates from the 2010 census. Although, according to SEER methodologies, different years of diagnosis are included for different registries in different areas. For example, Connecticut is included after 1975. Kentucky is included after 2000. However, our inclusion of the insurance recode variable limits all values to 2007+, as that is the earliest this variable is collected. SEER documentation does warn that insurance status might be modified by diagnosis age, since those who were 65+ were Medicare eligible despite labelling as uninsured, private, or unknown. However, this was not an issue in our analysis, as diagnosis age as low as 2, and as high as 108 years are adjusted and analyzed.
+
+RE: *Define the cancer diagnosis reporting source - give us a feel for the variable and how it was measured. This information should be available from SEER.*
+
+The variable reporting source is identifying the source documents used to abstract the case, as described in NAACCR Item #500. As discussed during the presentation, reporting source here does not represent the first diagnosis of disease, but the most complete source. Some categories are effective after 2996, but because of our insurance variable this does not pose an issue. This might confound our analysis and prevent us from using reporting source as a proxy for patients' access to healthcare. However, in another way, this strengthens our ability to deduce access to care, as extensive screening might not be available to everyone. Those who choose to not receive additional care past the diagnosis event, or unable to receive care, are mitigated. Also, the exclusion of autopsy and death certification categories due to the nature of survival analysis also help circumvent this problem. This reduces the generalizability of our study, but help refine its comparative power.
+
+RE: *How were other variables measured that were used in the analysis?*
+
+Demographic data is collected, estimated, or produced by the U.S. Census Bureau's Population Estimates Program, in collaboration with the National Center for Health Statistics, and with support from the NCI through an interagency agreement. Mortality data is collected and maintained by the National Center for Health Statistics. Cancer stage is derived following AJCC 7h edition guidelines, as well as incorporating ICD-10 codes. Insurance variable, as mentioned before, is derived from the NAACCR field. 
+
+RE: *Present confidence intervals instead of p-values in the results. I would like to see a table with the HRs and CIs and reference group. If you need an example, let me know, but if you search Pubmed for SEER survival, there will be numerous examples that you can look at.*
+
+VARIABLE	HAZARD RATIO (95% CI)	P VALUE
+REPORTING		
+   HOSPITAL	Reference	-
+   LABORATORY	0.98 (0.87, 1.11)	0.785
+   NURSING HOME	7.89 (6.56, 9.48)	<0.001
+   SURGERY CENTER	0.83 (0.75, 0.92)	<0.001
+   PHYSICIAN'S OFFICE	2.07 (1.88, 2.29)	<0.001
+   ONCOLOGY CENTER	0.91 (0.80, 1.04)	0.152
+DIAGNOSIS AGE	1.02 (1.02, 1.02)	<0.001
+SEX		
+   FEMALE	Reference	-
+   MALE	0.90 (0.79, 1.03)	0.128
+RACE		
+   BLACK	Reference	-
+   OTHER (AMERICAN INDIAN/AK NATIVE, ASIAN/PACIFIC ISLANDER)	0.56 (0.53, 0.60)	<0.001
+   UNKNOWN	0.12 (0.08, 0.17)	<0.001
+   WHITE	0.66 (0.64, 0.68)	<0.001
+INSURANCE		
+   INSURED	Reference	-
+   INSURED/NO SPECIFICS	1.15 (1.11, 1.20)	<0.001
+   ANY MEDICAID	1.61 (1.56, 1.67)	<0.001
+   UNINSURED	1.94 (1.80, 2.08)	<0.001
+   UNKNOWN	1.52 (1.41, 1.64)	<0.001
+STAGE OF DIAGNOSIS		
+   STAGE 1	Reference	-
+   STAGE 2	4.45 (4.21, 4.70)	<0.001
+   STAGE 3	14.85 (14.07, 15.68)	<0.001
+   STAGE 4	65.22 (61.91, 68.71)	<0.001
+   STAGE UNKNOWN	12.59 (11.74, 13.50)	<0.001
+
